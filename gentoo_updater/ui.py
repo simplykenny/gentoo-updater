@@ -406,6 +406,18 @@ def phase_done(result) -> None:
     _refresh()
 
 
+def set_phase_progress(detail: str) -> None:
+    """Update the running phase's detail in place (e.g. the '6/13 rust' merge
+    progress). No-op when the dashboard isn't active, so verbose/plain runs and
+    non-TTY output are unaffected. The animator repaints on its next tick."""
+    if not _active or _current is None:
+        return
+    with _lock:
+        if _current in _status:
+            state, _ = _status[_current]
+            _status[_current] = (state, detail)
+
+
 @contextlib.contextmanager
 def suspend():
     # Hand the terminal to a subprocess / prompt / picker: tear the pinned block

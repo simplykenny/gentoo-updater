@@ -14,7 +14,7 @@ _log = logging.getLogger("gentoo_updater.updater")
 
 from . import __version__
 from .runner import CommandRunner, CommandResult
-from .parse import parse_pretend, PretendPlan
+from .parse import parse_pretend, PretendPlan, parse_emerge_progress
 from .snapshot import SnapshotManager
 from . import advise
 from . import audit as _audit
@@ -186,7 +186,8 @@ class Updater:
         return PhaseResult("news", ok=True, detail=f"{n} unread (acknowledged)")
 
     def phase_sync(self) -> PhaseResult:
-        res = self.run.stream(["emaint", "sync", "-a"])
+        self.run.sudo_warmup()  # first mutating phase: prompt cleanly, once
+        res = self.run.run_live(["emaint", "sync", "-a"], on_line=self._sync_progress)
         if res.returncode != 0:
             # emaint returns nonzero if any repo failed, and doesn't say which,
             # so warn and let the user decide.
@@ -196,7 +197,7 @@ class Updater:
             return PhaseResult("sync", ok=True,
                                detail="sync had failures (continued by choice)")
         if shutil.which("eix-update"):
-            self.run.stream(["eix-update"])
+            self.run.run_live(["eix-update"])
         return PhaseResult("sync", ok=True, detail="all repos synced")
 
     @staticmethod
@@ -430,7 +431,8 @@ class Updater:
                "--with-bdeps=y", "--keep-going", "@world"]
         if self._excludes:
             cmd += ["--exclude", " ".join(self._excludes)]  # same as the plan step
-        res = self.run.stream(cmd)
+        self.run.sudo_warmup()  # re-prompt cleanly if the timestamp lapsed
+        res = self.run.run_live(cmd, on_line=self._merge_progress)
         if self.run.dry_run:
             # stream() short-circuits under dry-run and reports rc=0; don't let
             # that masquerade as a merge that actually happened (in the summary,
@@ -448,12 +450,15 @@ class Updater:
         overall_ok = True
         details = []
 
-        pres = self.run.stream(["emerge", "@preserved-rebuild"])
+        self.run.sudo_warmup()  # a long @world merge may have outlived the cache
+        pres = self.run.run_live(["emerge", "@preserved-rebuild"],
+                                 on_line=self._merge_progress)
         details.append(f"preserved-rebuild rc={pres.returncode}")
         overall_ok &= pres.returncode == 0
 
         # @module-rebuild is a fast no-op when there are no external modules.
-        mres = self.run.stream(["emerge", "@module-rebuild"])
+        mres = self.run.run_live(["emerge", "@module-rebuild"],
+                                 on_line=self._merge_progress)
         details.append(f"module-rebuild rc={mres.returncode}")
         overall_ok &= mres.returncode == 0
 
@@ -488,7 +493,8 @@ class Updater:
             return PhaseResult("depclean", ok=True,
                                detail=f"{removable} removable (deferred)")
 
-        r = self.run.stream(["emerge", "--depclean"])
+        self.run.sudo_warmup()
+        r = self.run.run_live(["emerge", "--depclean"], on_line=self._merge_progress)
         if r.returncode != 0:
             return PhaseResult("depclean", ok=False, detail="depclean failed")
         return PhaseResult("depclean", ok=True,
@@ -509,18 +515,46 @@ class Updater:
         else:
             details.append("linkage:skipped")
 
-        r2 = self.run.capture(["emerge", "-p", "@preserved-rebuild"])
-        needs = "Total: 0 packages" not in r2.stdout
-        details.append("preserved:pending" if needs else "preserved:clean")
-        ok &= not needs
+        r2 = self.run.capture(["emerge", "-p", "@preserved-rebuild"],
+                              force_root=True)
+        if r2.returncode != 0:
+            # Reading the preserved-libs registry needs root; under --dry-run we
+            # stay sudo-free, so this can't be determined. Inconclusive, not a
+            # failure -- don't turn a permission gap into "run failed".
+            details.append("preserved:unknown")
+            ui.warn(f"Couldn't check @preserved-rebuild (emerge exited "
+                    f"{r2.returncode}); skipping that check.")
+        else:
+            needs = parse_pretend(r2.stdout).total > 0
+            details.append("preserved:pending" if needs else "preserved:clean")
+            ok &= not needs
+            if needs:
+                ui.warn("Preserved libraries still need rebuilding. "
+                        "Run: sudo emerge @preserved-rebuild")
 
         return PhaseResult("verify", ok=ok, detail=", ".join(details))
 
+    def _merge_progress(self, line: str) -> None:
+        # Feed each emerge output line to the parser; when it's a
+        # ">>> Emerging/Installing (N of M) atom" marker, update the phase row.
+        prog = parse_emerge_progress(line)
+        if prog is not None:
+            ui.set_phase_progress(prog.label)
+
+    def _sync_progress(self, line: str) -> None:
+        # emaint/emerge --sync prints ">>> Syncing repository 'gentoo' ...".
+        s = line.strip()
+        if s.startswith(">>> Syncing repository"):
+            ui.set_phase_progress(s[len(">>> Syncing repository "):].strip(" .'\""))
+
     def _count_pending_configs(self) -> int:
         # ._cfg files live all over CONFIG_PROTECT dirs; find is simpler and more
-        # robust than poking at portage internals.
+        # robust than poking at portage internals. force_root so it can descend
+        # into 0700 dirs (ssl/private, portage/gnupg, ...) instead of silently
+        # skipping them and under-reporting pending config changes.
         res = self.run.capture(
-            ["find", "/etc", "-name", "._cfg????_*", "-type", "f"]
+            ["find", "/etc", "-name", "._cfg????_*", "-type", "f"],
+            force_root=True,
         )
         return len([ln for ln in res.stdout.splitlines() if ln.strip()])
 

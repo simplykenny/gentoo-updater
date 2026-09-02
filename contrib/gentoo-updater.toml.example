@@ -13,6 +13,7 @@
 # no_sudo        = false   # already root; don't prepend sudo
 # depclean       = false   # include a depclean step (still asks before removing)
 # select         = false   # interactively cherry-pick packages to update
+# verbose        = false   # stream full command output instead of the quiet dashboard
 
 # --- thresholds ---
 # low_space_gib  = 5.0     # warn below this much free space in the build dir

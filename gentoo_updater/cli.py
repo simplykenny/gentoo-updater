@@ -52,6 +52,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--plain", action="store_true",
         help="disable the live phase dashboard; use plain linear output",
     )
+    mode.add_argument(
+        "-v", "--verbose", action="store_true", default=None,
+        help="stream full command output (sync, emerge, rebuilds) to the "
+             "terminal instead of the quiet dashboard",
+    )
 
     safety = p.add_argument_group("safety toggles")
     safety.add_argument("--no-snapshot", action="store_true", default=None,
@@ -107,6 +112,7 @@ def _effective_config(args):
         "no_sudo": args.no_sudo,
         "depclean": args.depclean,
         "select": args.select,
+        "verbose": args.verbose,
         "notify": args.notify,
         # --no-audit is an explicit "off"; leave audit alone otherwise.
         "audit": False if args.no_audit else None,
@@ -137,7 +143,8 @@ def _refuse_root(cfg) -> bool:
 
 
 def _make_updater(args, cfg) -> Updater:
-    runner = CommandRunner(dry_run=args.dry_run, use_sudo=not cfg.no_sudo)
+    runner = CommandRunner(dry_run=args.dry_run, use_sudo=not cfg.no_sudo,
+                           verbose=cfg.verbose)
     snapshots = SnapshotManager(runner)
     interactive = not cfg.non_interactive and not cfg.yes
     # A dry run must stay side-effect-free: no audit writes, no notifications.

@@ -41,17 +41,19 @@ class FakeRunner:
     given command; returning None (the default) yields a successful empty result.
     """
 
-    def __init__(self, handler=None, dry_run=False):
+    def __init__(self, handler=None, dry_run=False, verbose=False):
         self._handler = handler or (lambda cmd: None)
         self.dry_run = dry_run
+        self.verbose = verbose
         self.calls: list[list[str]] = []
+        self.warmups = 0
 
     def _result(self, cmd):
         self.calls.append(list(cmd))
         res = self._handler(cmd)
         return res if res is not None else CommandResult(returncode=0, stdout="")
 
-    def capture(self, cmd):
+    def capture(self, cmd, *, force_root=False):
         return self._result(cmd)
 
     def stream(self, cmd):
@@ -59,6 +61,16 @@ class FakeRunner:
 
     def interactive(self, cmd):
         return self._result(cmd)
+
+    def run_live(self, cmd, *, on_line=None):
+        res = self._result(cmd)
+        if on_line is not None:
+            for line in (res.stdout or "").splitlines():
+                on_line(line)
+        return res
+
+    def sudo_warmup(self):
+        self.warmups += 1
 
 
 class FakeSnapshots:
@@ -242,6 +254,96 @@ class RunAllPipeline(unittest.TestCase):
         self.assertIn("dry-run", apply.detail)
         self.assertFalse(report.failed)
         self.assertEqual(report.reboot_pkgs, [])
+
+    def test_preserved_check_error_is_inconclusive_not_a_failure(self):
+        # Regression: `emerge -p @preserved-rebuild` needs root to read the
+        # preserved-libs registry; when it can't (permission denied, rc!=0) the
+        # verify phase must report it as unknown, not treat the empty output as
+        # "packages pending" and fail the whole run.
+        def handler(cmd):
+            if cmd[:1] == ["emerge"] and "-p" in cmd and "@preserved-rebuild" in cmd:
+                return CommandResult(13, stdout="",
+                                     stderr="Permission denied: "
+                                            "'/var/lib/portage/preserved_libs_registry'")
+            return _happy_handler(cmd)
+
+        updater, _ = make_updater(handler)
+        with _quiet(), env(BASE_TOOLS):
+            report = updater.run_all()
+
+        verify = _phase(report, "verify")
+        self.assertTrue(verify.ok)              # inconclusive != failure
+        self.assertFalse(report.failed)
+        self.assertIn("preserved:unknown", verify.detail)
+
+    def test_preserved_check_pending_still_fails(self):
+        # A genuine (rc==0) pending result must still fail verify.
+        def handler(cmd):
+            if cmd[:1] == ["emerge"] and "-p" in cmd and "@preserved-rebuild" in cmd:
+                return CommandResult(0, stdout=PRETEND_NONEMPTY)
+            return _happy_handler(cmd)
+
+        updater, _ = make_updater(handler)
+        with _quiet(), env(BASE_TOOLS):
+            report = updater.run_all()
+
+        self.assertTrue(report.failed)
+        self.assertIn("preserved:pending", _phase(report, "verify").detail)
+
+    def test_config_scan_runs_with_root(self):
+        # Regression: the /etc scan must be forced to root so it can descend
+        # into 0700 dirs instead of silently under-counting pending configs.
+        seen = {}
+
+        def handler(cmd):
+            if cmd[:1] == ["find"]:
+                seen["force_root"] = cmd  # recorded; assert via capture wrapper below
+            return _happy_handler(cmd)
+
+        updater, runner = make_updater(handler)
+        # wrap capture to record the force_root flag the phase passes
+        flags = []
+        orig = runner.capture
+        runner.capture = lambda cmd, *, force_root=False: (
+            flags.append((cmd[0], force_root)) or orig(cmd, force_root=force_root))
+        with _quiet(), env(BASE_TOOLS):
+            updater.run_all()
+
+        find_flags = [fr for prog, fr in flags if prog == "find"]
+        self.assertTrue(find_flags and all(find_flags))  # find was called force_root=True
+
+    def test_apply_drives_progress_row_and_warms_sudo(self):
+        # emerge output carries (N of M) markers; apply should feed them to the
+        # dashboard, and each mutating phase should warm sudo first.
+        merge_out = (
+            "Calculating dependencies... done!\n"
+            ">>> Emerging (1 of 2) sys-libs/glibc-2.40-r1::gentoo\n"
+            ">>> Installing (1 of 2) sys-libs/glibc-2.40-r1::gentoo\n"
+            ">>> Emerging (2 of 2) dev-lang/rust-1.83.0::gentoo\n"
+            ">>> Installing (2 of 2) dev-lang/rust-1.83.0::gentoo\n"
+        )
+
+        def handler(cmd):
+            if (cmd[:1] == ["emerge"] and "@world" in cmd
+                    and "--pretend" not in cmd):
+                return CommandResult(0, stdout=merge_out)
+            return _happy_handler(cmd)
+
+        seen = []
+        import gentoo_updater.ui as ui_mod
+        orig = ui_mod.set_phase_progress
+        ui_mod.set_phase_progress = seen.append
+        try:
+            updater, runner = make_updater(handler)
+            with _quiet(), env(BASE_TOOLS):
+                report = updater.run_all()
+        finally:
+            ui_mod.set_phase_progress = orig
+
+        self.assertFalse(report.failed)
+        # last progress line reflects the final package
+        self.assertIn("2/2  dev-lang/rust-1.83.0", seen)
+        self.assertGreaterEqual(runner.warmups, 1)  # sudo warmed before mutating
 
     def test_apply_failure_is_not_fatal_verify_still_runs(self):
         def handler(cmd):

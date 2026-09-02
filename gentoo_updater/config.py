@@ -34,6 +34,7 @@ class Config:
     no_sudo: bool = False
     depclean: bool = False           # include a depclean step in the pipeline
     select: bool = False             # interactively cherry-pick packages to update
+    verbose: bool = False            # stream full command output instead of the dashboard
 
     # thresholds
     low_space_gib: float = 5.0

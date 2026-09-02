@@ -4,6 +4,7 @@
     python contrib/ui-demo.py           # the pretty pinned dashboard
     python contrib/ui-demo.py --plain   # the plain-text fallback
     python contrib/ui-demo.py --fail    # make a phase fail, to see the FAIL row
+    python contrib/ui-demo.py --verbose # stream fake build output (terminal takeover)
 
 It fakes the phase sequence with sleeps, emits a couple of warnings so you can
 watch permanent output scroll *above* the pinned checklist, and fakes an emerge
@@ -67,20 +68,28 @@ _FAKE_MERGE = [
 ]
 
 
-def _fake_emerge() -> None:
-    # Runs "inside" suspend(): the dashboard is down, so these scroll like a
-    # real build would.
+def _fake_merge_quiet() -> None:
+    # Quiet default: no build spam -- just the per-package progress row updating
+    # on the pinned 'apply' line, driven the same way run_live drives it live.
+    total = len(_FAKE_MERGE)
+    for i, pkg in enumerate(_FAKE_MERGE, 1):
+        ui.set_phase_progress(f"{i}/{total}  {pkg}")
+        time.sleep(0.7)
+
+
+def _fake_merge_verbose() -> None:
+    # Verbose: the terminal is handed over and emerge streams its own output.
     total = len(_FAKE_MERGE)
     for i, pkg in enumerate(_FAKE_MERGE, 1):
         print(f">>> Emerging ({i} of {total}) {pkg}")
-        time.sleep(0.6)
+        time.sleep(0.5)
         print(f">>> Installing ({i} of {total}) {pkg}")
-        time.sleep(0.2)
 
 
 def main(argv: list[str]) -> int:
     ui.set_plain("--plain" in argv)
     make_fail = "--fail" in argv
+    verbose = "--verbose" in argv
 
     names = [name for name, _, _ in _STEPS]
     ui.begin_run(names)
@@ -99,8 +108,11 @@ def main(argv: list[str]) -> int:
             time.sleep(0.4)
 
         if dur is None:
-            with ui.suspend():
-                _fake_emerge()
+            if verbose:
+                with ui.suspend():
+                    _fake_merge_verbose()
+            else:
+                _fake_merge_quiet()   # pinned dashboard stays up, progress row moves
             res = FakeResult(name, ok=True, detail=detail)
         else:
             time.sleep(dur)

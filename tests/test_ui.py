@@ -151,5 +151,32 @@ class DashboardRender(unittest.TestCase):
         self.assertIn(f"\033[{first}A", buf.getvalue())
 
 
+    def test_set_phase_progress_updates_running_row(self):
+        orig_active, orig_current = ui._active, ui._current
+        ui._active = True
+        ui._current = "apply"
+        ui._status["apply"] = ("running", "")
+        try:
+            ui.set_phase_progress("6/13  dev-lang/rust-1.83.0")
+            state, detail = ui._status["apply"]
+            self.assertEqual(state, "running")            # state preserved
+            self.assertEqual(detail, "6/13  dev-lang/rust-1.83.0")
+            body = "\n".join(ui._dashboard_lines())
+            self.assertIn("6/13", body)
+        finally:
+            ui._active, ui._current = orig_active, orig_current
+
+    def test_set_phase_progress_is_noop_when_inactive(self):
+        orig_active = ui._active
+        ui._active = False
+        ui._current = "apply"
+        ui._status["apply"] = ("running", "")
+        try:
+            ui.set_phase_progress("should not appear")
+            self.assertEqual(ui._status["apply"], ("running", ""))
+        finally:
+            ui._active = orig_active
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

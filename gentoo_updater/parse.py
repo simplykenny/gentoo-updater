@@ -121,3 +121,42 @@ def parse_pretend(text: str, *, high_risk_atoms: tuple[str, ...] = ()) -> Preten
                 plan.high_risk.add(name)
 
     return plan
+
+
+# Live merge progress, e.g.:
+#   >>> Emerging (6 of 13) dev-lang/rust-1.83.0::gentoo
+#   >>> Installing (6 of 13) dev-lang/rust-1.83.0::gentoo
+# We surface these as a per-package progress line during `apply`.
+_PROGRESS = re.compile(
+    r"^>>>\s+(?P<action>Emerging|Installing)\s+"
+    r"\((?P<n>\d+)\s+of\s+(?P<total>\d+)\)\s+"
+    r"(?P<atom>\S+)"
+)
+
+
+@dataclass
+class EmergeProgress:
+    action: str   # "Emerging" or "Installing"
+    n: int        # 1-based index of the current package
+    total: int    # total packages in this merge
+    atom: str     # cat/pkg-version (::repo stripped)
+
+    @property
+    def label(self) -> str:
+        # Compact "6/13  dev-lang/rust-1.83.0" for the dashboard row.
+        return f"{self.n}/{self.total}  {self.atom}"
+
+
+def parse_emerge_progress(line: str) -> EmergeProgress | None:
+    """Return progress for a `>>> Emerging/Installing (N of M) atom` line, or
+    None for any other line. Pure and line-oriented so a streaming reader can
+    feed it every line cheaply."""
+    m = _PROGRESS.match(line.strip())
+    if not m:
+        return None
+    return EmergeProgress(
+        action=m.group("action"),
+        n=int(m.group("n")),
+        total=int(m.group("total")),
+        atom=m.group("atom").split("::", 1)[0],
+    )

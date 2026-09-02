@@ -35,12 +35,20 @@ def _c_locale_env() -> dict[str, str]:
 
 
 class CommandRunner:
-    def __init__(self, *, dry_run: bool = False, use_sudo: bool = True):
+    def __init__(self, *, dry_run: bool = False, use_sudo: bool = True,
+                 verbose: bool = False):
         self.dry_run = dry_run
         self.use_sudo = use_sudo
+        self.verbose = verbose
 
-    def _prep(self, cmd: list[str]) -> list[str]:
-        if self.use_sudo and self._needs_root(cmd):
+    def _prep(self, cmd: list[str], *, force_root: bool = False) -> list[str]:
+        # force_root marks a *read-only* command that still needs root to read
+        # root-only state (e.g. `emerge -p @preserved-rebuild` reads the
+        # preserved-libs registry; scanning /etc crosses 0700 dirs). We add
+        # sudo for it on a real run, but never under --dry-run, which stays
+        # sudo-free -- the caller handles the resulting inconclusive result.
+        if self.use_sudo and (self._needs_root(cmd)
+                              or (force_root and not self.dry_run)):
             return ["sudo", *cmd]
         return cmd
 
@@ -66,8 +74,8 @@ class CommandRunner:
             return "snapshot" in cmd or "delete" in cmd
         return False  # eselect news, find, findmnt, ... fine as a normal user
 
-    def capture(self, cmd: list[str]) -> CommandResult:
-        full = self._prep(cmd)
+    def capture(self, cmd: list[str], *, force_root: bool = False) -> CommandResult:
+        full = self._prep(cmd, force_root=force_root)
         if self.dry_run and self._needs_root(cmd):
             ui.dim(f"[dry-run] would run: {' '.join(full)}")
             return CommandResult(returncode=0)
@@ -110,3 +118,67 @@ class CommandRunner:
 
     def interactive(self, cmd: list[str]) -> CommandResult:
         return self.stream(cmd)
+
+    def run_live(self, cmd: list[str], *, on_line=None) -> CommandResult:
+        """Run a long mutating command (sync, the world merge, rebuilds).
+
+        Verbose mode hands the terminal to the child via stream(), so you see
+        its native, coloured output live -- today's behaviour. The quiet default
+        instead *pipes* the output: every line goes to the debug log and to
+        on_line() (which drives the dashboard's progress row), while the pinned
+        checklist stays on screen because we never suspend(). The build text
+        itself isn't echoed -- it's in the debug log if you want to tail it."""
+        if self.verbose:
+            return self.stream(cmd)
+
+        full = self._prep(cmd)
+        if self.dry_run and self._needs_root(cmd):
+            ui.dim(f"[dry-run] would run: {' '.join(full)}")
+            return CommandResult(returncode=0)
+        _log.debug("run_live: %s", " ".join(full))
+        start = time.time()
+        try:
+            proc = subprocess.Popen(
+                full, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1, env=_c_locale_env(),
+            )
+        except FileNotFoundError as exc:
+            _log.debug("run_live: %s -> not found", full[0])
+            return CommandResult(returncode=127, stderr=str(exc))
+        tail: list[str] = []
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.rstrip("\n")
+            _log.debug("| %s", line)
+            tail.append(line)
+            if len(tail) > 200:            # keep only the tail for error context
+                tail.pop(0)
+            if on_line is not None:
+                try:
+                    on_line(line)
+                except Exception:          # noqa: BLE001 - a bad callback must
+                    pass                   # never kill the merge
+        proc.wait()
+        _log.debug("run_live done: rc=%d (%.1fs)", proc.returncode,
+                   time.time() - start)
+        return CommandResult(proc.returncode, "\n".join(tail))
+
+    def sudo_warmup(self) -> None:
+        """Prime sudo's credential cache once, cleanly, before piped commands.
+
+        run_live pipes output, so a cold `sudo` prompt would land under the
+        pinned dashboard. Warming up first (with the terminal handed over) keeps
+        the prompt clean; calling it again before a later phase re-prompts only
+        if the timestamp has since expired -- e.g. after a multi-hour compile.
+        A no-op when sudo is off or under --dry-run."""
+        if not self.use_sudo or self.dry_run:
+            return
+        # Already valid? `sudo -n -v` succeeds silently -> no prompt, no flicker.
+        try:
+            probe = subprocess.run(["sudo", "-n", "-v"], capture_output=True)
+        except FileNotFoundError:
+            return  # no sudo binary; the mutating commands will fail loudly later
+        if probe.returncode == 0:
+            return
+        with ui.suspend():
+            subprocess.run(["sudo", "-v"], check=False)

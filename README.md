@@ -118,6 +118,7 @@ internal `sudo`.
 | `--non-interactive` | Never prompt; report where prompts would be (won't auto-apply unless `-y`) |
 | `--dry-run` | Never run a mutating command; print what would run |
 | `--plain` | No live dashboard; plain linear output |
+| `-v`, `--verbose` | Stream full command output (sync, `emerge`, rebuilds) instead of the quiet dashboard |
 | `--select` | Pick which pending packages to update |
 | `--no-snapshot` | Skip the pre-update snapshot |
 | `--no-sync` | Skip the repo sync |
@@ -141,13 +142,26 @@ goes: `·` pending, an animated spinner on the phase in progress, `✔` done, `�
 failed, `╌` skipped, each with a one-line detail. Warnings and the plan table
 scroll into history above the pinned block.
 
-During the streaming phases (sync, the real `emerge`, `dispatch-conf`) the block
-drops so Portage streams its own output normally, then repaints below it. Piped
-output, cron, or no `rich` falls back to plain linear output. Force that anywhere
-with `--plain`.
+By default the long phases run **quietly**: `sync`, the world `emerge`, and the
+rebuilds are captured rather than streamed, so the dashboard stays pinned the
+whole run instead of being pushed off-screen by build output. During the merge
+the `apply` row shows live per-package progress parsed from Portage —
+`⠹ apply   6/13  dev-lang/rust-1.83.0`. The full build output still goes to the
+debug log (`tail -f` it in another pane if you want to watch).
+
+Pass `-v` / `--verbose` to stream everything to the terminal instead — Portage
+takes over the screen for each streamed phase with its own coloured output, the
+way it did before. `dispatch-conf` is always interactive regardless. Piped
+output, cron, or no `rich` falls back to plain linear output; force that with
+`--plain`.
+
+Because the merge is captured, `gup` primes `sudo` once up front (and again
+before a later phase only if the credential cache has expired — e.g. after a
+multi-hour compile), so the password prompt stays clean instead of landing under
+the dashboard.
 
 Want to see it without kicking off a real update? `python contrib/ui-demo.py`
-fakes a full run (add `--plain` or `--fail` to see those paths).
+fakes a full run (add `--verbose`, `--plain`, or `--fail` to see those paths).
 
 ## Phases
 
@@ -222,6 +236,7 @@ Keys match the flag names. Starter file: [`contrib/gentoo-updater.toml.example`]
 yes           = false
 no_snapshot   = false
 select        = false
+verbose       = false   # stream full output instead of the quiet dashboard
 depclean      = false
 low_space_gib = 5.0
 notify        = "reboot"   # never | failure | reboot | always
@@ -285,9 +300,11 @@ you.
 
 ## Status
 
-v0.2 — single-machine Gentoo. Live dashboard, package picker, config file, audit
-log, notifications, multi-init scheduling, opt-in depclean. Multi-distro/fleet is
-out of scope for now.
+v0.4 — single-machine Gentoo. Quiet live dashboard with per-package merge
+progress (`--verbose` for full output), package picker, pre-update snapshot with
+rollback, config file, audit log, notifications, multi-init scheduling, opt-in
+depclean, and a guard against running under `sudo`. Multi-distro/fleet is out of
+scope for now.
 
 ## License
 

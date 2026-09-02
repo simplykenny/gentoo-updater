@@ -6,7 +6,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gentoo_updater.parse import parse_pretend
+from gentoo_updater.parse import parse_pretend, parse_emerge_progress
 
 HIGH_RISK = ("sys-devel/gcc", "sys-libs/glibc", "sys-apps/systemd", "sys-kernel/")
 
@@ -82,6 +82,25 @@ def test_up_to_date_output():
     txt = "Calculating dependencies... done!\n\nTotal: 0 packages, Size of downloads: 0 KiB\n"
     plan = parse_pretend(txt, high_risk_atoms=HIGH_RISK)
     assert plan.total == 0
+
+
+def test_emerge_progress_emerging():
+    p = parse_emerge_progress(">>> Emerging (6 of 13) dev-lang/rust-1.83.0::gentoo")
+    assert p is not None
+    assert (p.action, p.n, p.total) == ("Emerging", 6, 13)
+    assert p.atom == "dev-lang/rust-1.83.0"       # ::repo stripped
+    assert p.label == "6/13  dev-lang/rust-1.83.0"
+
+
+def test_emerge_progress_installing():
+    p = parse_emerge_progress(">>> Installing (1 of 3) sys-libs/glibc-2.40-r1::gentoo")
+    assert p is not None and p.action == "Installing" and p.n == 1 and p.total == 3
+
+
+def test_emerge_progress_ignores_build_noise():
+    for line in ("gcc -O2 -c foo.c", "", ">>> Unpacking source...",
+                 "Total: 13 packages", ">>> Emerging weird line"):
+        assert parse_emerge_progress(line) is None
 
 
 if __name__ == "__main__":
