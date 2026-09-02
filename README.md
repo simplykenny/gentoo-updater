@@ -59,14 +59,6 @@ cd gentoo-updater
 python -m gentoo_updater --help
 ```
 
-**pipx** — gives you a `gup` command in its own venv:
-
-```bash
-emerge -av dev-python/pipx
-pipx install git+https://github.com/gabethomson/gentoo-updater
-pipx install 'gentoo-updater[pretty] @ git+https://github.com/gabethomson/gentoo-updater'  # with rich
-```
-
 **ebuild** — the Gentoo-native way, from the bundled overlay:
 
 ```bash
@@ -113,7 +105,7 @@ internal `sudo`.
 ### Flags
 
 | Flag | Effect |
-|---|---|
+| --- | --- |
 | `-y`, `--yes` | Assume yes to all prompts; apply automatically |
 | `--non-interactive` | Never prompt; report where prompts would be (won't auto-apply unless `-y`) |
 | `--dry-run` | Never run a mutating command; print what would run |
@@ -270,7 +262,7 @@ and installs the right thing (as root; `--dry-run` prints it). Override with
 `--init`, set cadence with `--schedule`.
 
 | Init | Installs | Activate |
-|---|---|---|
+| --- | --- | --- |
 | systemd | `.service` + `.timer` in `/etc/systemd/system` | `systemctl enable --now gentoo-updater.timer` |
 | OpenRC | `/etc/cron.daily/gentoo-updater` | run a cron daemon (e.g. cronie) |
 | runit | `/etc/sv/gentoo-updater/run` (run-then-sleep loop) | `ln -s /etc/sv/gentoo-updater /var/service/` |
