@@ -1,4 +1,6 @@
-# gentoo-updater (`gup`)
+# gentoo-updater (`gup`) Not working on this anymore, was just a fun project to lern stuff
+
+Note: As im not doing nothing here anymore, but i still let it live here so you can play around
 
 A wrapper around Gentoo world updates. It runs the same commands you'd type by
 hand, in the right order, and adds the checks a bare update sequence skips: a
